@@ -106,6 +106,34 @@ const defaultRouteCities: RouteCity[] = [
   { id: 'taranto', name: 'Таранто', nameIt: 'Taranto', lng: 17.2470, lat: 40.4644, elevation: 15, distance: 1430 }
 ]
 
+// Region colors based on economic zones
+const regionColors: Record<string, { fill: string; stroke: string; zone: string }> = {
+  // North
+  'Piemonte': { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  'Lombardia': { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  'Veneto': { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  'Emilia-Romagna': { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  'Friuli-Venezia Giulia': { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  'Liguria': { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  "Valle d'Aosta/Vallée d'Aoste": { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  'Trentino-Alto Adige/Südtirol': { fill: '#10b981', stroke: '#059669', zone: 'north' },
+  // Central
+  'Toscana': { fill: '#f59e0b', stroke: '#d97706', zone: 'central' },
+  'Umbria': { fill: '#f59e0b', stroke: '#d97706', zone: 'central' },
+  'Marche': { fill: '#f59e0b', stroke: '#d97706', zone: 'central' },
+  'Lazio': { fill: '#f59e0b', stroke: '#d97706', zone: 'central' },
+  // South
+  'Abruzzo': { fill: '#ef4444', stroke: '#dc2626', zone: 'south' },
+  'Molise': { fill: '#ef4444', stroke: '#dc2626', zone: 'south' },
+  'Campania': { fill: '#ef4444', stroke: '#dc2626', zone: 'south' },
+  'Puglia': { fill: '#ef4444', stroke: '#dc2626', zone: 'south' },
+  'Basilicata': { fill: '#ef4444', stroke: '#dc2626', zone: 'south' },
+  'Calabria': { fill: '#ef4444', stroke: '#dc2626', zone: 'south' },
+  // Islands
+  'Sicilia': { fill: '#8b5cf6', stroke: '#7c3aed', zone: 'islands' },
+  'Sardegna': { fill: '#8b5cf6', stroke: '#7c3aed', zone: 'islands' },
+}
+
 // Секторы
 const sectors = [
   { id: 'turin-milan', name: 'Турин — Милан', distance: '140 км', economicRegion: 'north',
@@ -201,6 +229,126 @@ const getNiceStep = (total: number) => {
   return candidates.find(step => step >= rough) ?? Math.ceil(rough / 100) * 100
 }
 
+const MAP_DIMENSIONS = { width: 400, height: 500 }
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
+
+const projectCoordinates = (
+  coordinates: number[][] | number[][][] | number[][][],
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  width: number,
+  height: number,
+  padding: number = 20
+): string => {
+  const { minX, minY, maxX, maxY } = bounds
+  const scaleX = (width - 2 * padding) / (maxX - minX)
+  const scaleY = (height - 2 * padding) / (maxY - minY)
+  const scale = Math.min(scaleX, scaleY)
+
+  const offsetX = padding + (width - 2 * padding - (maxX - minX) * scale) / 2
+  const offsetY = padding + (height - 2 * padding - (maxY - minY) * scale) / 2
+
+  const projectPoint = (lng: number, lat: number): [number, number] => {
+    const x = offsetX + (lng - minX) * scale
+    const y = height - offsetY - (lat - minY) * scale
+    return [x, y]
+  }
+
+  const processCoords = (coords: unknown): string => {
+    if (typeof coords[0] === 'number') {
+      const [x, y] = projectPoint(coords[0] as number, coords[1] as number)
+      return `${x},${y}`
+    }
+
+    if (Array.isArray(coords[0]) && Array.isArray((coords[0] as unknown[])[0]) && Array.isArray(((coords[0] as unknown[])[0] as unknown[])[0])) {
+      return (coords as unknown as unknown[][][]).map(poly => processCoords(poly)).join(' ')
+    }
+
+    if (Array.isArray(coords[0]) && Array.isArray((coords[0] as unknown[])[0])) {
+      return (coords as unknown as number[][][]).map((ring, ri) => {
+        const points = ring.map((p, i) => {
+          const [x, y] = projectPoint(p[0], p[1])
+          return `${i === 0 && ri === 0 ? 'M' : i === 0 ? 'M' : 'L'}${x},${y}`
+        }).join(' ')
+        return points + ' Z'
+      }).join(' ')
+    }
+
+    return (coords as unknown as number[][]).map((p, i) => {
+      const [x, y] = projectPoint(p[0], p[1])
+      return `${i === 0 ? 'M' : 'L'}${x},${y}`
+    }).join(' ') + ' Z'
+  }
+
+  return processCoords(coordinates)
+}
+
+const buildMapDataFromGeoJSON = (geojson: any, level: 'regions' | 'provinces'): MapData => {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+
+  geojson.features.forEach((feature: any) => {
+    if (feature.geometry.type === 'Polygon') {
+      feature.geometry.coordinates.forEach((ring: number[][]) => {
+        ring.forEach(([lng, lat]) => {
+          minX = Math.min(minX, lng)
+          minY = Math.min(minY, lat)
+          maxX = Math.max(maxX, lng)
+          maxY = Math.max(maxY, lat)
+        })
+      })
+    } else if (feature.geometry.type === 'MultiPolygon') {
+      feature.geometry.coordinates.forEach((polygon: number[][][]) => {
+        polygon.forEach((ring: number[][]) => {
+          ring.forEach(([lng, lat]) => {
+            minX = Math.min(minX, lng)
+            minY = Math.min(minY, lat)
+            maxX = Math.max(maxX, lng)
+            maxY = Math.max(maxY, lat)
+          })
+        })
+      })
+    }
+  })
+
+  const bounds = { minX, minY, maxX, maxY }
+  const width = MAP_DIMENSIONS.width
+  const height = MAP_DIMENSIONS.height
+
+  const regions = geojson.features.map((feature: any) => {
+    const name = level === 'provinces'
+      ? (feature.properties?.prov_name || 'Unknown')
+      : (feature.properties?.reg_name || 'Unknown')
+    const regionName = feature.properties?.reg_name || name
+    const colorInfo = regionColors[regionName] || { fill: '#6b7280', stroke: '#4b5563', zone: 'unknown' }
+
+    let pathData = ''
+    if (feature.geometry.type === 'Polygon') {
+      pathData = projectCoordinates(feature.geometry.coordinates, bounds, width, height)
+    } else if (feature.geometry.type === 'MultiPolygon') {
+      pathData = feature.geometry.coordinates.map((poly: number[][][]) =>
+        projectCoordinates(poly as number[][][], bounds, width, height)
+      ).join(' ')
+    }
+
+    return {
+      name,
+      path: pathData,
+      fill: colorInfo.fill,
+      stroke: colorInfo.stroke,
+      zone: colorInfo.zone
+    }
+  })
+
+  return {
+    regions,
+    cities: [],
+    routePath: '',
+    bounds,
+    width,
+    height,
+    level
+  }
+}
+
 export default function ItalyProfile() {
   const [activeSector, setActiveSector] = useState<string | null>(null)
   const [hoveredSector, setHoveredSector] = useState<string | null>(null)
@@ -255,9 +403,11 @@ export default function ItalyProfile() {
   // Fetch map data
   useEffect(() => {
     setIsLoading(true)
-    fetch(`/api/map-data?level=${mapDetail}`)
+    const fileName = mapDetail === 'provinces' ? 'italy_provinces.geojson' : 'italy_regions.geojson'
+    fetch(`${BASE_PATH}/data/${fileName}`)
       .then(res => res.json())
-      .then(data => {
+      .then(geojson => {
+        const data = buildMapDataFromGeoJSON(geojson, mapDetail)
         setMapData(data)
         setIsLoading(false)
       })
